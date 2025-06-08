@@ -89,9 +89,11 @@ function App() {
             <div className="bg-white shadow sm:rounded-lg">
               <FileSearch onSearch={handleSearch} />
             </div>
-            <div className="bg-white shadow sm:rounded-lg">
-              <StorageStats stats={storageStats} />
-            </div>
+            {storageStats && (
+              <div className="bg-white shadow sm:rounded-lg">
+                <StorageStats stats={storageStats} />
+              </div>
+            )}
             <div className="bg-white shadow sm:rounded-lg">
               <div className="px-4 py-5 sm:px-6 flex justify-between items-center">
                 <h2 className="text-lg leading-6 font-medium text-gray-900">Files</h2>
