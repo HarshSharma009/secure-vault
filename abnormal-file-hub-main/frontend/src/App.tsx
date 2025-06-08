@@ -47,8 +47,13 @@ function App() {
       await fileService.uploadFile(file);
       await loadFiles();
       await loadStorageStats();
-    } catch (err) {
-      setError('Failed to upload file');
+      setError(null);
+    } catch (err: any) {
+      if (err.response?.status === 409) {
+        setError(err.response.data.message || 'Duplicate file detected');
+      } else {
+        setError('Failed to upload file');
+      }
       console.error('Error uploading file:', err);
     } finally {
       setLoading(false);
@@ -117,7 +122,12 @@ function App() {
                       </svg>
                     </div>
                     <div className="ml-3">
-                      <p className="text-sm text-red-700">{error}</p>
+                      <p className="text-sm font-medium text-red-800">{error}</p>
+                      {error.includes('Duplicate file detected.') && (
+                        <p className="mt-1 text-sm text-red-700">
+                          Please choose a different file.
+                        </p>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -169,7 +179,7 @@ function App() {
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
                             <button
-                              onClick={() => fileService.downloadFile(file.file, file.original_filename)}
+                              onClick={() => fileService.downloadFile(file.id, file.original_filename)}
                               className="text-indigo-600 hover:text-indigo-900 mr-4"
                             >
                               Download

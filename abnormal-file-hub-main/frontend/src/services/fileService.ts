@@ -26,12 +26,20 @@ export const fileService = {
     const formData = new FormData();
     formData.append('file', file);
 
-    const response = await axios.post(`${API_URL}/files/`, formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-    });
-    return response.data;
+    try {
+      const response = await axios.post(`${API_URL}/files/`, formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      });
+      return response.data;
+    } catch (error: any) {
+      if (error.response?.status === 409) {
+        // Pass through the error response from the backend
+        throw error;
+      }
+      throw error;
+    }
   },
 
   async getFiles(): Promise<FileType[]> {
@@ -53,7 +61,7 @@ export const fileService = {
   },
 
   async getStorageStats(): Promise<StorageStats> {
-    const response = await axios.get(`${API_URL}/files/storage_stats/`);
+    const response = await axios.get(`${API_URL}/files/stats/`);
     return response.data;
   },
 
@@ -61,9 +69,13 @@ export const fileService = {
     await axios.delete(`${API_URL}/files/${id}/`);
   },
 
-  async downloadFile(fileUrl: string, filename: string): Promise<void> {
+  async downloadFile(id: string, filename: string): Promise<void> {
+    if (!id) {
+      throw new Error('Invalid file ID');
+    }
+
     try {
-      const response = await axios.get(fileUrl, {
+      const response = await axios.get(`${API_URL}/files/${id}/`, {
         responseType: 'blob',
       });
       
@@ -77,9 +89,15 @@ export const fileService = {
       link.click();
       document.body.removeChild(link);
       window.URL.revokeObjectURL(url);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Download error:', error);
-      throw new Error('Failed to download file');
+      if (error.response?.status === 404) {
+        throw new Error('File not found');
+      } else if (error.response?.status === 500) {
+        throw new Error(error.response.data?.detail || 'Server error while downloading file');
+      } else {
+        throw new Error('Failed to download file');
+      }
     }
   },
 }; 

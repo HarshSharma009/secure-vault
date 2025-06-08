@@ -15,13 +15,17 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onUploadSuccess }) => {
   const uploadMutation = useMutation({
     mutationFn: fileService.uploadFile,
     onSuccess: () => {
-      // Invalidate and refetch files query
       queryClient.invalidateQueries({ queryKey: ['files'] });
       setSelectedFile(null);
+      setError(null);
       onUploadSuccess();
     },
-    onError: (error) => {
-      setError('Failed to upload file. Please try again.');
+    onError: (error: any) => {
+      if (error.response?.status === 409) {
+        setError(error.response.data.message || 'Duplicate file detected');
+      } else {
+        setError('Failed to upload file. Please try again.');
+      }
       console.error('Upload error:', error);
     },
   });

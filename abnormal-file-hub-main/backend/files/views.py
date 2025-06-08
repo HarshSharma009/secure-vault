@@ -7,8 +7,18 @@ from django.utils import timezone
 from datetime import timedelta
 from .models import File
 from .serializers import FileSerializer
+from .services import FileService
+from rest_framework.parsers import MultiPartParser, FormParser
+from django.http import FileResponse
+from django.core.files.storage import default_storage
+import logging
+import traceback
+import os
+from django.conf import settings
 
 # Create your views here.
+
+logger = logging.getLogger(__name__)
 
 class FileViewSet(viewsets.ModelViewSet):
     queryset = File.objects.all()
@@ -17,111 +27,167 @@ class FileViewSet(viewsets.ModelViewSet):
     search_fields = ['original_filename', 'file_type']
     ordering_fields = ['uploaded_at', 'size', 'file_type']
     ordering = ['-uploaded_at']
+    parser_classes = (MultiPartParser, FormParser)
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.file_service = FileService()
 
     def create(self, request, *args, **kwargs):
-        file_obj = request.FILES.get('file')
-        if not file_obj:
-            return Response({'error': 'No file provided'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Calculate file hash
-        file_hash = self.calculate_file_hash(file_obj)
-        
-        # Check for duplicate
-        existing_file = File.objects.filter(file_hash=file_hash).first()
-        if existing_file:
-            # Create a duplicate reference
-            duplicate = File(
-                original_filename=file_obj.name,
-                file_type=file_obj.content_type,
-                size=file_obj.size,
-                file_hash=file_hash,
-                is_duplicate=True,
-                original_file=existing_file
-            )
-            duplicate.save()
-            existing_file.reference_count += 1
-            existing_file.save()
-            
-            serializer = self.get_serializer(duplicate)
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-        
-        # If no duplicate found, create new file
-        data = {
-            'file': file_obj,
-            'original_filename': file_obj.name,
-            'file_type': file_obj.content_type,
-            'size': file_obj.size,
-            'file_hash': file_hash
-        }
-        
-        serializer = self.get_serializer(data=data)
-        serializer.is_valid(raise_exception=True)
-        self.perform_create(serializer)
-        
-        headers = self.get_success_headers(serializer.data)
-        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+        logger.info("Starting file upload process")
+        try:
+            if 'file' not in request.FILES:
+                logger.error("No file provided in request")
+                return Response(
+                    {'error': 'No file provided'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
 
-    def calculate_file_hash(self, file_obj):
-        """Calculate SHA-256 hash of file content"""
-        import hashlib
-        sha256_hash = hashlib.sha256()
-        for chunk in file_obj.chunks():
-            sha256_hash.update(chunk)
-        return sha256_hash.hexdigest()
+            file_obj = request.FILES['file']
+            original_filename = file_obj.name
+            logger.info(f"Processing file: {original_filename}")
+
+            try:
+                file_obj, is_duplicate = self.file_service.save_file(file_obj, original_filename)
+                logger.info(f"File processed successfully. Duplicate: {is_duplicate}")
+                
+                if is_duplicate:
+                    logger.info(f"Duplicate file detected: {original_filename}")
+                    return Response(
+                        {
+                            'error': 'Duplicate file detected',
+                            'existing_file': {
+                                'id': file_obj.id,
+                                'filename': file_obj.original_filename,
+                                'uploaded_at': file_obj.uploaded_at,
+                                'size': file_obj.size
+                            }
+                        },
+                        status=status.HTTP_409_CONFLICT
+                    )
+                
+                serializer = self.get_serializer(file_obj)
+                logger.info(f"File uploaded successfully: {original_filename}")
+                return Response(serializer.data, status=status.HTTP_201_CREATED)
+                
+            except Exception as e:
+                logger.error(f"Error processing file: {str(e)}")
+                logger.error(f"Traceback: {traceback.format_exc()}")
+                return Response(
+                    {
+                        'error': 'Error processing file',
+                        'detail': str(e)
+                    },
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+                
+        except Exception as e:
+            logger.error(f"Unexpected error in file upload: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return Response(
+                {
+                    'error': 'Unexpected error during file upload',
+                    'detail': str(e)
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    def retrieve(self, request, *args, **kwargs):
+        try:
+            logger.info("Starting file download process")
+            file_obj = self.get_object()
+            file_path = file_obj.file_path
+            full_path = os.path.join(settings.MEDIA_ROOT, file_path)
+            
+            logger.debug(f"Attempting to download file: {file_path}")
+            
+            if not os.path.exists(full_path):
+                logger.error(f"File not found at path: {full_path}")
+                return Response(
+                    {'error': 'File not found in storage'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            
+            try:
+                file = open(full_path, 'rb')
+                response = FileResponse(file)
+                response['Content-Disposition'] = f'attachment; filename="{file_obj.original_filename}"'
+                response['Content-Type'] = 'application/octet-stream'
+                logger.info(f"File download successful: {file_obj.original_filename}")
+                return response
+            except Exception as e:
+                logger.error(f"Error opening file: {str(e)}")
+                return Response(
+                    {'error': 'Error reading file'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+            
+        except File.DoesNotExist:
+            logger.error("File record not found in database")
+            return Response(
+                {'error': 'File not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            logger.error(f"Unexpected error in file download: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return Response(
+                {
+                    'error': 'Failed to download file',
+                    'detail': str(e)
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
     @action(detail=False, methods=['get'])
     def search(self, request):
-        """Enhanced search with multiple filters"""
-        query = Q()
-        
-        # Search by filename
-        filename = request.query_params.get('filename', '')
-        if filename:
-            query &= Q(original_filename__icontains=filename)
-        
-        # Filter by file type
-        file_type = request.query_params.get('file_type', '')
-        if file_type:
-            query &= Q(file_type__icontains=file_type)
-        
-        # Filter by size range
-        min_size = request.query_params.get('min_size')
-        max_size = request.query_params.get('max_size')
-        if min_size:
-            query &= Q(size__gte=min_size)
-        if max_size:
-            query &= Q(size__lte=max_size)
-        
-        # Filter by upload date
-        date_range = request.query_params.get('date_range', '')
-        if date_range:
-            today = timezone.now()
-            if date_range == 'today':
-                query &= Q(uploaded_at__date=today.date())
-            elif date_range == 'week':
-                query &= Q(uploaded_at__gte=today - timedelta(days=7))
-            elif date_range == 'month':
-                query &= Q(uploaded_at__gte=today - timedelta(days=30))
-        
-        files = File.objects.filter(query)
-        serializer = self.get_serializer(files, many=True)
-        return Response(serializer.data)
+        try:
+            filters = {
+                'filename': request.query_params.get('filename', ''),
+                'file_type': request.query_params.get('file_type', ''),
+                'min_size': request.query_params.get('min_size'),
+                'max_size': request.query_params.get('max_size'),
+                'date_range': request.query_params.get('date_range', '')
+            }
+            
+            files = self.file_service.search_files(filters)
+            serializer = self.get_serializer(files, many=True)
+            return Response(serializer.data)
+            
+        except Exception as e:
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
     @action(detail=False, methods=['get'])
-    def storage_stats(self, request):
-        """Get storage statistics including deduplication savings"""
-        total_size = File.objects.filter(is_duplicate=False).aggregate(Sum('size'))['size__sum'] or 0
-        original_size = File.objects.aggregate(Sum('size'))['size__sum'] or 0
-        savings = original_size - total_size
-        
-        stats = {
-            'total_files': File.objects.count(),
-            'unique_files': File.objects.filter(is_duplicate=False).count(),
-            'duplicate_files': File.objects.filter(is_duplicate=True).count(),
-            'total_size_bytes': original_size,
-            'unique_size_bytes': total_size,
-            'storage_savings_bytes': savings,
-            'storage_savings_percentage': (savings / original_size * 100) if original_size > 0 else 0
-        }
-        
-        return Response(stats)
+    def stats(self, request):
+        try:
+            logger.debug("Processing stats request")
+            stats = self.file_service.get_storage_stats()
+            logger.debug(f"Successfully retrieved stats: {stats}")
+            return Response(stats)
+        except Exception as e:
+            logger.error(f"Error in stats view: {str(e)}")
+            return Response(
+                {
+                    'error': 'Failed to retrieve storage statistics',
+                    'detail': str(e)
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    def destroy(self, request, *args, **kwargs):
+        try:
+            file_id = kwargs.get('pk')
+            if self.file_service.delete_file(file_id):
+                return Response(status=status.HTTP_204_NO_CONTENT)
+            return Response(
+                {'error': 'File not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )

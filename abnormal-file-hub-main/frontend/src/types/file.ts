@@ -1,6 +1,7 @@
 export interface File {
   id: string;
-  file: string;
+  file: string | null;
+  file_path: string;
   original_filename: string;
   file_type: string;
   size: number;
